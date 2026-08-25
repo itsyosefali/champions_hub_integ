@@ -1,14 +1,14 @@
 app_name = "champions_hub_integ"
 app_title = "Champions Hub Integ"
 app_publisher = "itsyosefali"
-app_description = "integration with champions_hub"
+app_description = "Champions Hub enrollment sync integration for ERPNext"
 app_email = "joeyxjoey123@gmail.com"
 app_license = "mit"
 
 # Apps
 # ------------------
 
-# required_apps = []
+required_apps = ["frappe", "erpnext"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [
@@ -83,12 +83,12 @@ app_license = "mit"
 # ------------
 
 # before_install = "champions_hub_integ.install.before_install"
-# after_install = "champions_hub_integ.install.after_install"
+after_install = "champions_hub_integ.install.after_install"
 
 # Uninstallation
 # ------------
 
-# before_uninstall = "champions_hub_integ.uninstall.before_uninstall"
+before_uninstall = "champions_hub_integ.install.before_uninstall"
 # after_uninstall = "champions_hub_integ.uninstall.after_uninstall"
 
 # Integration Setup
@@ -148,23 +148,11 @@ app_license = "mit"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"champions_hub_integ.tasks.all"
-# 	],
-# 	"daily": [
-# 		"champions_hub_integ.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"champions_hub_integ.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"champions_hub_integ.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"champions_hub_integ.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"hourly": [
+		"champions_hub_integ.sync.enrollments.sync_enrollments"
+	],
+}
 
 # Testing
 # -------

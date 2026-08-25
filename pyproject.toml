@@ -3,7 +3,7 @@ name = "champions_hub_integ"
 authors = [
     { name = "itsyosefali", email = "joeyxjoey123@gmail.com"}
 ]
-description = "integration with champions_hub"
+description = "Champions Hub enrollment sync integration for ERPNext"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]

@@ -1,6 +1,6 @@
 ### Champions Hub Integ
 
-integration with champions_hub
+Champions Hub enrollment sync integration for ERPNext.
 
 ### Installation
 

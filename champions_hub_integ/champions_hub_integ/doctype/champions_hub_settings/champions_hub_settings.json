@@ -1,0 +1,191 @@
+{
+  "actions": [],
+  "creation": "2026-08-19 10:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "enabled",
+    "sb_connection",
+    "base_url",
+    "api_token",
+    "last_synced_at",
+    "sb_actions",
+    "test_connection_btn",
+    "sync_now_btn",
+    "connection_status",
+    "sb_accounts",
+    "default_company",
+    "income_account",
+    "receivable_account",
+    "fee_expense_account",
+    "cb_payment_accounts",
+    "payment_account_stripe",
+    "payment_account_xpay",
+    "payment_account_instapay",
+    "payment_account_vodafone_cash",
+    "payment_account_manual_transfer",
+    "cost_center",
+    "sb_exchange_rates",
+    "exchange_rates"
+  ],
+  "fields": [
+    {
+      "default": "1",
+      "fieldname": "enabled",
+      "fieldtype": "Check",
+      "label": "Enabled"
+    },
+    {
+      "fieldname": "sb_connection",
+      "fieldtype": "Section Break",
+      "label": "Connection"
+    },
+    {
+      "default": "https://champions-hub.com/api/v1",
+      "fieldname": "base_url",
+      "fieldtype": "Data",
+      "label": "Base URL",
+      "reqd": 1
+    },
+    {
+      "fieldname": "api_token",
+      "fieldtype": "Password",
+      "label": "API Token",
+      "reqd": 1
+    },
+    {
+      "fieldname": "last_synced_at",
+      "fieldtype": "Data",
+      "label": "Last Synced At",
+      "read_only": 1,
+      "description": "ISO 8601 timestamp cursor for incremental sync"
+    },
+    {
+      "fieldname": "sb_actions",
+      "fieldtype": "Section Break",
+      "label": "Actions"
+    },
+    {
+      "fieldname": "test_connection_btn",
+      "fieldtype": "Button",
+      "label": "Test Connection"
+    },
+    {
+      "fieldname": "sync_now_btn",
+      "fieldtype": "Button",
+      "label": "Sync Now"
+    },
+    {
+      "fieldname": "connection_status",
+      "fieldtype": "HTML",
+      "label": "Connection Status"
+    },
+    {
+      "fieldname": "sb_accounts",
+      "fieldtype": "Section Break",
+      "label": "Accounts Mapping"
+    },
+    {
+      "fieldname": "default_company",
+      "fieldtype": "Link",
+      "label": "Default Company",
+      "options": "Company",
+      "reqd": 1
+    },
+    {
+      "fieldname": "income_account",
+      "fieldtype": "Link",
+      "label": "Income Account",
+      "options": "Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "receivable_account",
+      "fieldtype": "Link",
+      "label": "Receivable Account",
+      "options": "Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "fee_expense_account",
+      "fieldtype": "Link",
+      "label": "Fee Expense Account",
+      "options": "Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "cb_payment_accounts",
+      "fieldtype": "Column Break",
+      "label": "Payment Accounts"
+    },
+    {
+      "fieldname": "payment_account_stripe",
+      "fieldtype": "Link",
+      "label": "Payment Account (Stripe)",
+      "options": "Account"
+    },
+    {
+      "fieldname": "payment_account_xpay",
+      "fieldtype": "Link",
+      "label": "Payment Account (XPay)",
+      "options": "Account"
+    },
+    {
+      "fieldname": "payment_account_instapay",
+      "fieldtype": "Link",
+      "label": "Payment Account (InstaPay)",
+      "options": "Account"
+    },
+    {
+      "fieldname": "payment_account_vodafone_cash",
+      "fieldtype": "Link",
+      "label": "Payment Account (Vodafone Cash)",
+      "options": "Account"
+    },
+    {
+      "fieldname": "payment_account_manual_transfer",
+      "fieldtype": "Link",
+      "label": "Payment Account (Manual Transfer)",
+      "options": "Account"
+    },
+    {
+      "fieldname": "cost_center",
+      "fieldtype": "Link",
+      "label": "Cost Center",
+      "options": "Cost Center"
+    },
+    {
+      "fieldname": "sb_exchange_rates",
+      "fieldtype": "Section Break",
+      "label": "Exchange Rates",
+      "description": "Fallback rates to company currency when Currency Exchange / Frankfurter has no rate (e.g. SAR → LYD)."
+    },
+    {
+      "fieldname": "exchange_rates",
+      "fieldtype": "Table",
+      "label": "Exchange Rates",
+      "options": "Champions Hub Exchange Rate"
+    }
+  ],
+  "issingle": 1,
+  "links": [],
+  "modified": "2026-08-19 10:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Champions Hub Integ",
+  "name": "Champions Hub Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC"
+}
