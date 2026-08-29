@@ -395,6 +395,52 @@ def _ensure_currency_exchange(from_currency, to_currency, date, rate):
     return doc.name
 
 
+def _default_customer_group(customer_type="Individual"):
+    """Return a leaf Customer Group (ERPNext rejects group nodes on Customer)."""
+    selling_group = frappe.db.get_single_value("Selling Settings", "customer_group")
+    if selling_group and not frappe.db.get_value("Customer Group", selling_group, "is_group"):
+        return selling_group
+
+    preferred = "Commercial" if customer_type == "Company" else "Individual"
+    if frappe.db.exists("Customer Group", preferred) and not frappe.db.get_value(
+        "Customer Group", preferred, "is_group"
+    ):
+        return preferred
+
+    group = frappe.db.get_value(
+        "Customer Group",
+        {"is_group": 0},
+        "name",
+        order_by="name asc",
+    )
+    if not group:
+        frappe.throw(
+            "No non-group Customer Group found. Create one under Selling > Customer Group.",
+            title="Missing Customer Group",
+        )
+    return group
+
+
+def _default_territory():
+    """Return a leaf Territory (ERPNext rejects group nodes on Customer)."""
+    selling_territory = frappe.db.get_single_value("Selling Settings", "territory")
+    if selling_territory and not frappe.db.get_value("Territory", selling_territory, "is_group"):
+        return selling_territory
+
+    territory = frappe.db.get_value(
+        "Territory",
+        {"is_group": 0},
+        "name",
+        order_by="name asc",
+    )
+    if not territory:
+        frappe.throw(
+            "No non-group Territory found. Create one under Selling > Territory.",
+            title="Missing Territory",
+        )
+    return territory
+
+
 def _upsert_customer(student, billing, settings):
     """Create or update a Customer keyed on student.user_id."""
     user_id = student["user_id"]
@@ -402,19 +448,25 @@ def _upsert_customer(student, billing, settings):
 
     customer_name_value = billing.get("company") or student.get("name") or student["email"]
     customer_type = "Company" if billing.get("company") else "Individual"
+    customer_group = _default_customer_group(customer_type)
+    territory = _default_territory()
 
     if existing:
         doc = frappe.get_doc("Customer", existing)
         doc.customer_name = customer_name_value
         doc.customer_type = customer_type
+        if not doc.customer_group or frappe.db.get_value("Customer Group", doc.customer_group, "is_group"):
+            doc.customer_group = customer_group
+        if not doc.territory or frappe.db.get_value("Territory", doc.territory, "is_group"):
+            doc.territory = territory
         doc.save(ignore_permissions=True)
         return doc.name
 
     doc = frappe.new_doc("Customer")
     doc.customer_name = customer_name_value
     doc.customer_type = customer_type
-    doc.customer_group = "All Customer Groups"
-    doc.territory = "All Territories"
+    doc.customer_group = customer_group
+    doc.territory = territory
     doc.champions_hub_user_id = user_id
     doc.save(ignore_permissions=True)
     return doc.name
