@@ -500,7 +500,7 @@ def _upsert_sales_invoice(
     source_id, customer, item_code, posting_date, currency, conversion_rate,
     invoice_total, discount, outstanding, due_date, settings, accounts
 ):
-    """Create or update a submitted Sales Invoice keyed on source_id."""
+    """Create or update a draft Sales Invoice keyed on source_id."""
     existing = frappe.db.get_value(
         "Sales Invoice", {"champions_enrollment_id": source_id}, "name"
     )
@@ -540,7 +540,6 @@ def _upsert_sales_invoice(
         sinv.discount_amount = discount_amount
 
     sinv.insert(ignore_permissions=True)
-    sinv.submit()
     return sinv.name
 
 
@@ -548,7 +547,7 @@ def _upsert_payment_entry(
     source_id, customer, amount_paid, currency, conversion_rate, posting_date,
     gateway, reference, sinv_name, settings, accounts
 ):
-    """Create a Payment Entry linked to the Sales Invoice."""
+    """Create a draft Payment Entry linked to the Sales Invoice."""
     existing = frappe.db.get_value(
         "Payment Entry", {"champions_enrollment_id": source_id}, "name"
     )
@@ -589,7 +588,6 @@ def _upsert_payment_entry(
     })
 
     pe.insert(ignore_permissions=True)
-    pe.submit()
     return pe.name
 
 
@@ -631,7 +629,7 @@ def _upsert_credit_note(
     source_id, customer, item_code, amount, currency, conversion_rate,
     posting_date, sinv_name, settings, accounts
 ):
-    """Create a Credit Note (return Sales Invoice) for refunds/chargebacks."""
+    """Create a draft Credit Note (return Sales Invoice) for refunds/chargebacks."""
     cn_key = f"CN-{source_id}"
     existing = frappe.db.get_value(
         "Sales Invoice", {"champions_enrollment_id": cn_key}, "name"
@@ -663,7 +661,6 @@ def _upsert_credit_note(
     })
 
     cn.insert(ignore_permissions=True)
-    cn.submit()
     return cn.name
 
 
