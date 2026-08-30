@@ -1,7 +1,6 @@
 import json
 import frappe
 from frappe.utils import flt, today, getdate
-from erpnext.setup.utils import get_exchange_rate
 
 
 GATEWAY_MODE_MAP = {
@@ -21,6 +20,7 @@ def upsert_enrollment(row, settings):
     student = row["student"]
     billing = row.get("billing") or {}
     course = row.get("course")
+    bundle = row.get("bundle")
     payment = row.get("payment") or {}
     installment = row.get("installment")
     refund = row.get("refund")
@@ -63,8 +63,9 @@ def upsert_enrollment(row, settings):
 
     # --- Item ---
     item_code = None
-    if course:
-        item_code = _upsert_item(course)
+    product = course or bundle
+    if product:
+        item_code = _upsert_item(product)
 
     # --- Sales Invoice ---
     sinv_name = None
@@ -179,7 +180,8 @@ def upsert_enrollment(row, settings):
 
 
 def _company_currency(settings):
-    return frappe.get_cached_value("Company", settings.default_company, "default_currency")
+    """Champions Hub accounting base currency (SAR). Not the local ERPNext Company currency."""
+    return settings.get("base_currency") or "SAR"
 
 
 def _resolve_accounts(settings):
@@ -289,10 +291,104 @@ def _ensure_currency(currency):
     doc.insert(ignore_permissions=True)
 
 
+def _lookup_api_exchange_rate(from_currency, to_currency, date):
+    """Return a rate previously seeded from Champions Hub API enrollments."""
+    rows = frappe.get_all(
+        "Currency Exchange",
+        filters={
+            "from_currency": from_currency,
+            "to_currency": to_currency,
+            "date": ("<=", date),
+            "for_selling": 1,
+        },
+        fields=["exchange_rate"],
+        order_by="date desc",
+        limit=1,
+    )
+    return flt(rows[0].exchange_rate) if rows else 0.0
+
+
+def _seed_api_exchange_rates(amounts, payment, base_currency, date):
+    """Persist FX pairs from the enrollment API payload for cross-rate lookups."""
+    if not amounts:
+        return
+
+    currency = amounts.get("currency")
+    quoted_base = amounts.get("quoted_base_currency")
+    applied = flt(amounts.get("applied_exchange_rate"))
+
+    # Price quoted in SAR: applied converts SAR -> payment currency.
+    if quoted_base == base_currency and applied and currency and currency != base_currency:
+        _ensure_currency_exchange(currency, base_currency, date, flt(1 / applied))
+
+    # Paid in SAR: applied converts quoted_base -> SAR.
+    if currency == base_currency and quoted_base and quoted_base != base_currency and applied:
+        _ensure_currency_exchange(quoted_base, base_currency, date, applied)
+
+    if not payment:
+        return
+
+    settlement_currency = payment.get("settlement_currency")
+    settlement_rate = flt(payment.get("settlement_exchange_rate"))
+    if not currency or not settlement_currency or not settlement_rate:
+        return
+
+    # Stripe settlement: e.g. 1 SAR = 0.266 USD → USD -> SAR = 1 / 0.266.
+    if currency == base_currency and settlement_currency != base_currency:
+        _ensure_currency_exchange(settlement_currency, base_currency, date, flt(1 / settlement_rate))
+
+
+def _rate_from_api_amounts(currency, base_currency, amounts, date, payment=None):
+    """
+    Derive payment currency -> base currency (SAR) from enrollment API fields only.
+    applied_exchange_rate converts quoted_base_currency -> payment currency.
+    """
+    if not amounts or not currency:
+        return 0.0
+    if currency == base_currency:
+        return 1.0
+
+    quoted_base = amounts.get("quoted_base_currency")
+    applied = flt(amounts.get("applied_exchange_rate"))
+
+    # Checkout quoted in SAR.
+    if quoted_base == base_currency and applied:
+        return flt(1 / applied)
+
+    if not quoted_base:
+        return _lookup_api_exchange_rate(currency, base_currency, date)
+
+    # Same checkout and quote currency (USD/USD, EUR/EUR, ...).
+    if currency == quoted_base:
+        if quoted_base == base_currency:
+            return 1.0
+        return _lookup_api_exchange_rate(currency, base_currency, date)
+
+    payment_to_quoted = 0.0
+    if applied:
+        payment_to_quoted = flt(1 / applied)
+    else:
+        gross_minor = flt(amounts.get("gross_minor"))
+        quoted_minor = flt(amounts.get("quoted_base_amount_minor"))
+        if gross_minor and quoted_minor:
+            payment_to_quoted = quoted_minor / gross_minor
+
+    if not payment_to_quoted:
+        return _lookup_api_exchange_rate(currency, base_currency, date)
+
+    if quoted_base == base_currency:
+        return payment_to_quoted
+
+    quoted_to_base = _lookup_api_exchange_rate(quoted_base, base_currency, date)
+    if quoted_to_base:
+        return payment_to_quoted * quoted_to_base
+
+    return 0.0
+
+
 def _resolve_conversion_rate(currency, posting_date, settings, amounts=None, payment=None):
     """
-    Return company-currency conversion rate for `currency`.
-    Creates a Currency Exchange row so ERPNext never hits Frankfurter for LYD pairs.
+    Return base-currency (SAR) conversion rate for `currency` using API data only.
     """
     company_currency = _company_currency(settings)
     _ensure_currency(currency)
@@ -301,65 +397,17 @@ def _resolve_conversion_rate(currency, posting_date, settings, amounts=None, pay
         return 1.0
 
     date = getdate(posting_date or today())
-    rate = 0.0
-
-    # 1) Existing Currency Exchange for this date (or older)
-    rows = frappe.get_all(
-        "Currency Exchange",
-        filters={
-            "from_currency": currency,
-            "to_currency": company_currency,
-            "date": ("<=", date),
-            "for_selling": 1,
-        },
-        fields=["exchange_rate"],
-        order_by="date desc",
-        limit=1,
+    _seed_api_exchange_rates(amounts, payment, company_currency, date)
+    rate = _rate_from_api_amounts(
+        currency, company_currency, amounts, date, payment=payment
     )
-    rate = flt(rows[0].exchange_rate) if rows else 0.0
-
-    # 2) API checkout rate when the quote was in company currency
-    if not rate and amounts:
-        quoted_base = amounts.get("quoted_base_currency")
-        applied = flt(amounts.get("applied_exchange_rate"))
-        if quoted_base == company_currency and applied:
-            # applied_exchange_rate converts quoted_base -> amounts.currency
-            # We need currency -> company_currency, so invert.
-            rate = flt(1 / applied)
-
-    # 3) Stripe settlement rate when settlement is company currency
-    if not rate and payment:
-        settlement_currency = payment.get("settlement_currency")
-        settlement_rate = flt(payment.get("settlement_exchange_rate"))
-        if settlement_currency == company_currency and settlement_rate:
-            rate = settlement_rate
-
-    # 4) Fallback rates configured in Champions Hub Settings
-    if not rate:
-        for row in settings.get("exchange_rates") or []:
-            if row.currency == currency and flt(row.exchange_rate) > 0:
-                rate = flt(row.exchange_rate)
-                break
-
-    # 5) Skip Frankfurter for unsupported pairs (e.g. * → LYD) — it only spam-logs 404s
-    # Prefer Settings / Currency Exchange. Do not call get_exchange_rate unless company
-    # currency is a Frankfurter-supported one and no local rate exists.
-    if not rate:
-        company_currency_ok = company_currency not in ("LYD",)
-        if company_currency_ok:
-            try:
-                rate = flt(
-                    get_exchange_rate(currency, company_currency, date, args="for_selling")
-                )
-            except Exception:
-                rate = 0.0
 
     if not rate:
         frappe.throw(
             (
                 f"No exchange rate for {currency} → {company_currency} on {date}. "
-                f"Add a row under Champions Hub Settings → Exchange Rates, "
-                f"or create a Currency Exchange record."
+                f"The enrollment API did not include enough FX data "
+                f"(amounts.applied_exchange_rate / quoted_base_currency)."
             ),
             title="Missing Exchange Rate",
         )
@@ -369,7 +417,7 @@ def _resolve_conversion_rate(currency, posting_date, settings, amounts=None, pay
 
 
 def _ensure_currency_exchange(from_currency, to_currency, date, rate):
-    """Upsert a Currency Exchange so ERPNext validation does not call Frankfurter."""
+    """Insert a Currency Exchange row when missing (first API rate wins)."""
     existing = frappe.db.get_value(
         "Currency Exchange",
         {
@@ -380,8 +428,6 @@ def _ensure_currency_exchange(from_currency, to_currency, date, rate):
         "name",
     )
     if existing:
-        if flt(frappe.db.get_value("Currency Exchange", existing, "exchange_rate")) != flt(rate):
-            frappe.db.set_value("Currency Exchange", existing, "exchange_rate", rate)
         return existing
 
     doc = frappe.new_doc("Currency Exchange")
@@ -441,6 +487,101 @@ def _default_territory():
     return territory
 
 
+def _resolve_country(country_code):
+    if not country_code:
+        return None
+    code = str(country_code).strip().upper()
+    country = frappe.db.get_value("Country", {"code": code}, "name")
+    if country:
+        return country
+    if frappe.db.exists("Country", country_code):
+        return country_code
+    return None
+
+
+def _address_city(address_text, country_code):
+    if address_text and isinstance(address_text, str):
+        parts = [part.strip() for part in address_text.split(",") if part.strip()]
+        if len(parts) >= 2 and parts[-1].replace(" ", "").isdigit():
+            return parts[-2]
+        if parts:
+            return parts[-1]
+    return country_code or "-"
+
+
+def _billing_contact_fields(student, billing):
+    """Extract email, phone, and address line from API billing (supports dict or string address)."""
+    email = student.get("email")
+    phone = billing.get("phone")
+    address_text = billing.get("address")
+
+    if isinstance(address_text, dict):
+        email = address_text.get("email") or email
+        phone = address_text.get("phone") or phone
+        address_text = (
+            address_text.get("line1")
+            or address_text.get("address_line1")
+            or address_text.get("address")
+        )
+
+    if address_text is not None and not isinstance(address_text, str):
+        address_text = str(address_text)
+
+    return email, phone, address_text
+
+
+def _upsert_customer_address(customer_name, student, billing):
+    """Create or update the primary billing Address with email and phone."""
+    email, phone, address_text = _billing_contact_fields(student, billing)
+    country = _resolve_country(billing.get("country"))
+
+    if not any([email, phone, address_text, country]):
+        return
+
+    existing = frappe.db.sql(
+        """
+        SELECT a.name
+        FROM `tabAddress` a
+        INNER JOIN `tabDynamic Link` dl ON dl.parent = a.name
+        WHERE dl.link_doctype = 'Customer'
+            AND dl.link_name = %s
+            AND IFNULL(a.is_primary_address, 0) = 1
+        ORDER BY a.modified DESC
+        LIMIT 1
+        """,
+        customer_name,
+    )
+
+    if existing:
+        doc = frappe.get_doc("Address", existing[0][0])
+    else:
+        doc = frappe.new_doc("Address")
+        doc.address_type = "Billing"
+        doc.is_primary_address = 1
+        doc.is_shipping_address = 1
+        doc.address_title = frappe.db.get_value("Customer", customer_name, "customer_name")
+        doc.append("links", {"link_doctype": "Customer", "link_name": customer_name})
+
+    if address_text:
+        doc.address_line1 = address_text
+    elif not doc.address_line1:
+        doc.address_line1 = doc.address_title or "-"
+
+    doc.city = _address_city(address_text, billing.get("country")) or doc.address_line1
+    if country:
+        doc.country = country
+    elif not doc.country:
+        doc.country = frappe.db.get_single_value("Global Defaults", "country") or "Libya"
+
+    if email:
+        doc.email_id = email
+    if phone:
+        doc.phone = phone
+
+    doc.flags.ignore_permissions = True
+    doc.save() if existing else doc.insert()
+
+
 def _upsert_customer(student, billing, settings):
     """Create or update a Customer keyed on student.user_id."""
     user_id = student["user_id"]
@@ -460,6 +601,7 @@ def _upsert_customer(student, billing, settings):
         if not doc.territory or frappe.db.get_value("Territory", doc.territory, "is_group"):
             doc.territory = territory
         doc.save(ignore_permissions=True)
+        _upsert_customer_address(doc.name, student, billing)
         return doc.name
 
     doc = frappe.new_doc("Customer")
@@ -469,17 +611,39 @@ def _upsert_customer(student, billing, settings):
     doc.territory = territory
     doc.champions_hub_user_id = user_id
     doc.save(ignore_permissions=True)
+    _upsert_customer_address(doc.name, student, billing)
     return doc.name
 
 
-def _upsert_item(course):
-    """Create or update an Item keyed on course.id."""
-    item_code = course["id"]
+def _product_item_name(product):
+    return product.get("title") or product.get("title_localized") or product["id"]
+
+
+def _find_item_by_name(item_name):
+    """Reuse an existing course item when the same product title was synced before."""
+    return frappe.db.get_value(
+        "Item",
+        {"item_name": item_name, "item_group": "Courses"},
+        "name",
+        order_by="creation asc",
+    )
+
+
+def _upsert_item(product):
+    """Create or update an Item keyed on product id; reuse by title to avoid duplicates."""
+    item_code = product["id"]
+    item_name = _product_item_name(product)
+
     if frappe.db.exists("Item", item_code):
         doc = frappe.get_doc("Item", item_code)
-        doc.item_name = course.get("title") or course.get("title_localized") or item_code
-        doc.save(ignore_permissions=True)
+        if doc.item_name != item_name:
+            doc.item_name = item_name
+            doc.save(ignore_permissions=True)
         return item_code
+
+    existing_by_name = _find_item_by_name(item_name)
+    if existing_by_name:
+        return existing_by_name
 
     if not frappe.db.exists("Item Group", "Courses"):
         ig = frappe.new_doc("Item Group")
@@ -489,7 +653,7 @@ def _upsert_item(course):
 
     doc = frappe.new_doc("Item")
     doc.item_code = item_code
-    doc.item_name = course.get("title") or course.get("title_localized") or item_code
+    doc.item_name = item_name
     doc.item_group = "Courses"
     doc.is_stock_item = 0
     doc.save(ignore_permissions=True)
