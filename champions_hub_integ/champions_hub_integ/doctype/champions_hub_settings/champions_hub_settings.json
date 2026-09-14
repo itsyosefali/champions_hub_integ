@@ -8,26 +8,29 @@
     "sb_connection",
     "base_url",
     "api_token",
+    "cb_connection",
     "last_synced_at",
-    "sb_actions",
+    "sb_sync",
     "test_connection_btn",
     "sync_now_btn",
-    "connection_status",
-    "sb_accounts",
+    "sb_company",
     "default_company",
     "base_currency",
+    "cost_center",
+    "sb_revenue",
     "income_account",
-    "receivable_account",
     "fee_expense_account",
-    "cb_payment_accounts",
+    "sb_receivables",
+    "receivable_account_egp",
+    "receivable_account_usd",
+    "receivable_account_eur",
+    "sb_payment_accounts",
     "payment_account_stripe",
     "payment_account_xpay",
     "payment_account_instapay",
+    "cb_payment_accounts",
     "payment_account_vodafone_cash",
-    "payment_account_manual_transfer",
-    "cost_center",
-    "sb_exchange_rates",
-    "exchange_rates"
+    "payment_account_manual_transfer"
   ],
   "fields": [
     {
@@ -39,7 +42,7 @@
     {
       "fieldname": "sb_connection",
       "fieldtype": "Section Break",
-      "label": "Connection"
+      "label": "API Connection"
     },
     {
       "default": "https://champions-hub.com/api/v1",
@@ -55,16 +58,20 @@
       "reqd": 1
     },
     {
+      "fieldname": "cb_connection",
+      "fieldtype": "Column Break"
+    },
+    {
       "fieldname": "last_synced_at",
       "fieldtype": "Data",
       "label": "Last Synced At",
       "read_only": 1,
-      "description": "ISO 8601 timestamp cursor for incremental sync"
+      "description": "Incremental sync cursor (ISO 8601)"
     },
     {
-      "fieldname": "sb_actions",
+      "fieldname": "sb_sync",
       "fieldtype": "Section Break",
-      "label": "Actions"
+      "label": "Sync"
     },
     {
       "fieldname": "test_connection_btn",
@@ -77,30 +84,36 @@
       "label": "Sync Now"
     },
     {
-      "fieldname": "connection_status",
-      "fieldtype": "HTML",
-      "label": "Connection Status"
-    },
-    {
-      "fieldname": "sb_accounts",
+      "fieldname": "sb_company",
       "fieldtype": "Section Break",
-      "label": "Accounts Mapping"
+      "label": "Company"
     },
     {
       "fieldname": "default_company",
       "fieldtype": "Link",
-      "label": "Default Company",
+      "label": "Company",
       "options": "Company",
       "reqd": 1
     },
     {
-      "default": "SAR",
-      "description": "Accounting base currency for Champions Hub sync (Saudi company). Not inferred from the linked ERPNext Company.",
+      "default": "USD",
+      "description": "FX base for conversion rates. Payment currencies: EGP, USD, EUR.",
       "fieldname": "base_currency",
       "fieldtype": "Link",
       "label": "Base Currency",
       "options": "Currency",
       "reqd": 1
+    },
+    {
+      "fieldname": "cost_center",
+      "fieldtype": "Link",
+      "label": "Cost Center",
+      "options": "Cost Center"
+    },
+    {
+      "fieldname": "sb_revenue",
+      "fieldtype": "Section Break",
+      "label": "Revenue & Fees"
     },
     {
       "fieldname": "income_account",
@@ -110,76 +123,84 @@
       "reqd": 1
     },
     {
-      "fieldname": "receivable_account",
-      "fieldtype": "Link",
-      "label": "Receivable Account",
-      "options": "Account",
-      "reqd": 1
-    },
-    {
       "fieldname": "fee_expense_account",
       "fieldtype": "Link",
-      "label": "Fee Expense Account",
+      "label": "Gateway Fee Expense",
+      "options": "Account",
+      "reqd": 1,
+      "description": "Stripe processing fees only"
+    },
+    {
+      "fieldname": "sb_receivables",
+      "fieldtype": "Section Break",
+      "label": "Receivable Accounts",
+      "description": "One receivable per payment currency (EGP, USD, EUR)"
+    },
+    {
+      "fieldname": "receivable_account_egp",
+      "fieldtype": "Link",
+      "label": "EGP",
       "options": "Account",
       "reqd": 1
     },
     {
-      "fieldname": "cb_payment_accounts",
-      "fieldtype": "Column Break",
-      "label": "Payment Accounts"
+      "fieldname": "receivable_account_usd",
+      "fieldtype": "Link",
+      "label": "USD",
+      "options": "Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "receivable_account_eur",
+      "fieldtype": "Link",
+      "label": "EUR",
+      "options": "Account",
+      "reqd": 1
+    },
+    {
+      "fieldname": "sb_payment_accounts",
+      "fieldtype": "Section Break",
+      "label": "Payment Accounts",
+      "description": "Bank/cash account per gateway"
     },
     {
       "fieldname": "payment_account_stripe",
       "fieldtype": "Link",
-      "label": "Payment Account (Stripe)",
+      "label": "Stripe",
       "options": "Account"
     },
     {
       "fieldname": "payment_account_xpay",
       "fieldtype": "Link",
-      "label": "Payment Account (XPay)",
+      "label": "XPay",
       "options": "Account"
     },
     {
       "fieldname": "payment_account_instapay",
       "fieldtype": "Link",
-      "label": "Payment Account (InstaPay)",
+      "label": "InstaPay",
       "options": "Account"
+    },
+    {
+      "fieldname": "cb_payment_accounts",
+      "fieldtype": "Column Break"
     },
     {
       "fieldname": "payment_account_vodafone_cash",
       "fieldtype": "Link",
-      "label": "Payment Account (Vodafone Cash)",
+      "label": "Vodafone Cash",
       "options": "Account"
     },
     {
       "fieldname": "payment_account_manual_transfer",
       "fieldtype": "Link",
-      "label": "Payment Account (Manual Transfer)",
+      "label": "Manual Transfer",
       "options": "Account"
-    },
-    {
-      "fieldname": "cost_center",
-      "fieldtype": "Link",
-      "label": "Cost Center",
-      "options": "Cost Center"
-    },
-    {
-      "fieldname": "sb_exchange_rates",
-      "fieldtype": "Section Break",
-      "label": "Exchange Rates",
-      "description": "Deprecated — exchange rates come from the enrollment API only."
-    },
-    {
-      "fieldname": "exchange_rates",
-      "fieldtype": "Table",
-      "label": "Exchange Rates",
-      "options": "Champions Hub Exchange Rate"
     }
   ],
   "issingle": 1,
   "links": [],
-  "modified": "2026-08-19 10:00:00.000000",
+  "modified": "2026-09-01 10:00:00.000000",
   "modified_by": "Administrator",
   "module": "Champions Hub Integ",
   "name": "Champions Hub Settings",

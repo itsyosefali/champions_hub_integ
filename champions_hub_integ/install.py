@@ -41,6 +41,9 @@ CUSTOM_FIELDS = {
 
 def after_install():
     create_custom_fields(CUSTOM_FIELDS, update=True)
+    for currency in ("EGP", "USD", "EUR"):
+        if frappe.db.exists("Currency", currency):
+            frappe.db.set_value("Currency", currency, "enabled", 1)
 
 
 def before_uninstall():

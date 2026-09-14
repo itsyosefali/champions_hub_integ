@@ -1,5 +1,6 @@
 import json
 import frappe
+from erpnext.setup.utils import get_exchange_rate
 from frappe.utils import flt, today, getdate
 
 
@@ -10,6 +11,8 @@ GATEWAY_MODE_MAP = {
     "vodafone_cash": "Cash",
     "manual_transfer": "Bank Transfer",
 }
+
+SUPPORTED_CURRENCIES = frozenset({"EGP", "USD", "EUR"})
 
 
 def upsert_enrollment(row, settings):
@@ -27,6 +30,16 @@ def upsert_enrollment(row, settings):
     dispute = row.get("dispute")
 
     currency = amounts["currency"]
+    if currency not in SUPPORTED_CURRENCIES:
+        frappe.throw(
+            (
+                f"Unsupported enrollment currency {currency}. "
+                f"Champions Hub sync supports {', '.join(sorted(SUPPORTED_CURRENCIES))} only."
+            ),
+            title="Unsupported Currency",
+        )
+    _ensure_currency(currency)
+
     amount_paid = flt(amounts["amount_paid_minor"]) / 100
     wallet_applied = flt(amounts.get("wallet_amount_applied_minor") or 0) / 100
     discount = flt(amounts.get("discount_amount_minor") or 0) / 100
@@ -48,12 +61,18 @@ def upsert_enrollment(row, settings):
     if posting_date and "T" in posting_date:
         posting_date = posting_date[:10]
 
+    product = course or bundle
+
+    fx = row.get("fx") or {}
+
     conversion_rate = _resolve_conversion_rate(
         currency=currency,
         posting_date=posting_date,
         settings=settings,
         amounts=amounts,
         payment=payment,
+        product=product,
+        fx=fx,
     )
 
     accounts = _resolve_accounts(settings)
@@ -63,7 +82,6 @@ def upsert_enrollment(row, settings):
 
     # --- Item ---
     item_code = None
-    product = course or bundle
     if product:
         item_code = _upsert_item(product)
 
@@ -112,6 +130,8 @@ def upsert_enrollment(row, settings):
             settings=settings,
             amounts=amounts,
             payment=payment,
+            product=product,
+            fx=fx,
         )
         _upsert_fee_journal(
             source_id=source_id,
@@ -146,6 +166,8 @@ def upsert_enrollment(row, settings):
             settings=settings,
             amounts=amounts,
             payment=payment,
+            product=product,
+            fx=fx,
         )
         cn_name = _upsert_credit_note(
             source_id=source_id,
@@ -180,16 +202,12 @@ def upsert_enrollment(row, settings):
 
 
 def _company_currency(settings):
-    """Champions Hub accounting base currency (SAR). Not the local ERPNext Company currency."""
-    return settings.get("base_currency") or "SAR"
+    """Champions Hub accounting base currency (USD). Not the local ERPNext Company currency."""
+    return settings.get("base_currency") or "USD"
 
 
 def _resolve_accounts(settings):
-    """
-    Resolve income / receivable / payment accounts.
-    Falls back to company defaults when Settings are misconfigured
-    (e.g. income set to a receivable, receivable set to Cash).
-    """
+    """Resolve income, payment, and fee accounts from Champions Hub Settings."""
     company = settings.default_company
 
     income = settings.income_account
@@ -201,22 +219,6 @@ def _resolve_accounts(settings):
             order_by="name asc",
         ) or frappe.db.get_value("Company", company, "default_income_account")
 
-    receivable = settings.receivable_account
-    if not _is_receivable_account(receivable):
-        receivable = (
-            frappe.db.get_value(
-                "Account",
-                {
-                    "company": company,
-                    "account_type": "Receivable",
-                    "is_group": 0,
-                    "disabled": 0,
-                },
-                "name",
-            )
-            or frappe.db.get_value("Company", company, "default_receivable_account")
-        )
-
     cost_center = settings.cost_center or frappe.db.get_value(
         "Company", company, "cost_center"
     )
@@ -226,18 +228,15 @@ def _resolve_accounts(settings):
         field = f"payment_account_{gateway}"
         acc = getattr(settings, field, None)
         if not acc or not _is_bank_or_cash_account(acc):
-            acc = (
-                frappe.db.get_value(
-                    "Account",
-                    {
-                        "company": company,
-                        "account_type": ("in", ["Bank", "Cash"]),
-                        "is_group": 0,
-                        "disabled": 0,
-                    },
-                    "name",
-                )
-                or receivable
+            acc = frappe.db.get_value(
+                "Account",
+                {
+                    "company": company,
+                    "account_type": ("in", ["Bank", "Cash"]),
+                    "is_group": 0,
+                    "disabled": 0,
+                },
+                "name",
             )
         payment_accounts[gateway] = acc
 
@@ -251,10 +250,90 @@ def _resolve_accounts(settings):
 
     return frappe._dict(
         income=income,
-        receivable=receivable,
         cost_center=cost_center,
         payment_accounts=payment_accounts,
         fee_expense=fee_expense,
+        company=company,
+    )
+
+
+def _account_currency(account):
+    if not account:
+        return None
+    return frappe.db.get_value("Account", account, "account_currency")
+
+
+def _settings_receivable_account(settings, currency):
+    account = getattr(settings, f"receivable_account_{currency.lower()}", None)
+    if account and _is_receivable_account(account) and _account_currency(account) == currency:
+        return account
+    return None
+
+
+def _resolve_receivable_account(company, currency, settings):
+    """Pick a receivable account for EGP, USD, or EUR."""
+    account = _settings_receivable_account(settings, currency)
+    if account:
+        return account
+
+    account = frappe.db.get_value(
+        "Account",
+        {
+            "company": company,
+            "account_type": "Receivable",
+            "account_currency": currency,
+            "is_group": 0,
+            "disabled": 0,
+        },
+        "name",
+        order_by="name asc",
+    )
+    if account:
+        return account
+
+    default = frappe.db.get_value("Company", company, "default_receivable_account")
+    if default and _is_receivable_account(default) and _account_currency(default) == currency:
+        return default
+
+    frappe.throw(
+        (
+            f"No receivable account for {currency} in company {company}. "
+            f"Set the {currency} receivable in Champions Hub Settings."
+        ),
+        title="Missing Receivable Account",
+    )
+
+
+def _resolve_payment_account(company, gateway, currency, settings, payment_accounts):
+    """Pick a bank/cash account for the gateway, preferring the payment currency."""
+    configured = payment_accounts.get(gateway) or payment_accounts.get("stripe")
+    if configured and _is_bank_or_cash_account(configured) and _account_currency(configured) == currency:
+        return configured
+
+    account = frappe.db.get_value(
+        "Account",
+        {
+            "company": company,
+            "account_type": ("in", ["Bank", "Cash"]),
+            "account_currency": currency,
+            "is_group": 0,
+            "disabled": 0,
+        },
+        "name",
+        order_by="name asc",
+    )
+    if account:
+        return account
+
+    if configured and _is_bank_or_cash_account(configured):
+        return configured
+
+    frappe.throw(
+        (
+            f"No bank/cash account for {currency} (gateway: {gateway}) in company {company}. "
+            f"Configure Payment Account ({gateway.title()}) or create a {currency} bank account."
+        ),
+        title="Missing Payment Account",
     )
 
 
@@ -308,6 +387,32 @@ def _lookup_api_exchange_rate(from_currency, to_currency, date):
     return flt(rows[0].exchange_rate) if rows else 0.0
 
 
+def _lookup_exchange_rate(from_currency, to_currency, date):
+    """API-seeded rate first, then ERPNext Currency Exchange / pegged defaults."""
+    rate = _lookup_api_exchange_rate(from_currency, to_currency, date)
+    if rate:
+        return rate
+    return flt(get_exchange_rate(from_currency, to_currency, transaction_date=date) or 0)
+
+
+def _amounts_with_product_quote(amounts, product):
+    """Use course/bundle list price as quote currency when amounts omit FX fields."""
+    if not amounts or amounts.get("quoted_base_currency"):
+        return amounts
+    if not product:
+        return amounts
+
+    list_currency = product.get("list_currency")
+    list_price_minor = product.get("list_price_minor")
+    if not list_currency or not list_price_minor:
+        return amounts
+
+    augmented = dict(amounts)
+    augmented["quoted_base_currency"] = list_currency
+    augmented["quoted_base_amount_minor"] = list_price_minor
+    return augmented
+
+
 def _seed_api_exchange_rates(amounts, payment, base_currency, date):
     """Persist FX pairs from the enrollment API payload for cross-rate lookups."""
     if not amounts:
@@ -317,11 +422,11 @@ def _seed_api_exchange_rates(amounts, payment, base_currency, date):
     quoted_base = amounts.get("quoted_base_currency")
     applied = flt(amounts.get("applied_exchange_rate"))
 
-    # Price quoted in SAR: applied converts SAR -> payment currency.
+    # Price quoted in base currency: applied converts base -> payment currency.
     if quoted_base == base_currency and applied and currency and currency != base_currency:
         _ensure_currency_exchange(currency, base_currency, date, flt(1 / applied))
 
-    # Paid in SAR: applied converts quoted_base -> SAR.
+    # Paid in base currency: applied converts quoted_base -> base.
     if currency == base_currency and quoted_base and quoted_base != base_currency and applied:
         _ensure_currency_exchange(quoted_base, base_currency, date, applied)
 
@@ -333,14 +438,14 @@ def _seed_api_exchange_rates(amounts, payment, base_currency, date):
     if not currency or not settlement_currency or not settlement_rate:
         return
 
-    # Stripe settlement: e.g. 1 SAR = 0.266 USD → USD -> SAR = 1 / 0.266.
+    # Stripe settlement: e.g. payment currency USD, settlement EUR → seed cross-rate.
     if currency == base_currency and settlement_currency != base_currency:
         _ensure_currency_exchange(settlement_currency, base_currency, date, flt(1 / settlement_rate))
 
 
 def _rate_from_api_amounts(currency, base_currency, amounts, date, payment=None):
     """
-    Derive payment currency -> base currency (SAR) from enrollment API fields only.
+    Derive payment currency -> base currency (USD) from enrollment API fields.
     applied_exchange_rate converts quoted_base_currency -> payment currency.
     """
     if not amounts or not currency:
@@ -351,18 +456,18 @@ def _rate_from_api_amounts(currency, base_currency, amounts, date, payment=None)
     quoted_base = amounts.get("quoted_base_currency")
     applied = flt(amounts.get("applied_exchange_rate"))
 
-    # Checkout quoted in SAR.
+    # Checkout quoted in base currency.
     if quoted_base == base_currency and applied:
         return flt(1 / applied)
 
     if not quoted_base:
-        return _lookup_api_exchange_rate(currency, base_currency, date)
+        return _lookup_exchange_rate(currency, base_currency, date)
 
     # Same checkout and quote currency (USD/USD, EUR/EUR, ...).
     if currency == quoted_base:
         if quoted_base == base_currency:
             return 1.0
-        return _lookup_api_exchange_rate(currency, base_currency, date)
+        return _lookup_exchange_rate(currency, base_currency, date)
 
     payment_to_quoted = 0.0
     if applied:
@@ -374,22 +479,43 @@ def _rate_from_api_amounts(currency, base_currency, amounts, date, payment=None)
             payment_to_quoted = quoted_minor / gross_minor
 
     if not payment_to_quoted:
-        return _lookup_api_exchange_rate(currency, base_currency, date)
+        return _lookup_exchange_rate(currency, base_currency, date)
 
     if quoted_base == base_currency:
         return payment_to_quoted
 
-    quoted_to_base = _lookup_api_exchange_rate(quoted_base, base_currency, date)
+    quoted_to_base = _lookup_exchange_rate(quoted_base, base_currency, date)
     if quoted_to_base:
         return payment_to_quoted * quoted_to_base
 
     return 0.0
 
 
-def _resolve_conversion_rate(currency, posting_date, settings, amounts=None, payment=None):
-    """
-    Return base-currency (SAR) conversion rate for `currency` using API data only.
-    """
+def _rate_from_fx_block(currency, base_currency, fx):
+    """Prefer enrollment `fx.to_base_rate` (charge currency → base) when it matches."""
+    if not fx or not currency:
+        return 0.0
+    if currency == base_currency:
+        return 1.0
+
+    to_base = flt(fx.get("to_base_rate"))
+    if not to_base:
+        return 0.0
+
+    charge = fx.get("charge_currency") or currency
+    target = fx.get("base_currency_target") or fx.get("base_currency")
+    if charge != currency:
+        return 0.0
+    if target and target != base_currency:
+        return 0.0
+
+    return to_base
+
+
+def _resolve_conversion_rate(
+    currency, posting_date, settings, amounts=None, payment=None, product=None, fx=None
+):
+    """Return base-currency (USD) conversion rate for `currency` from enrollment API data."""
     company_currency = _company_currency(settings)
     _ensure_currency(currency)
 
@@ -397,6 +523,14 @@ def _resolve_conversion_rate(currency, posting_date, settings, amounts=None, pay
         return 1.0
 
     date = getdate(posting_date or today())
+
+    # Trial / preferred path: direct rate from API fx block.
+    rate = _rate_from_fx_block(currency, company_currency, fx)
+    if rate:
+        _ensure_currency_exchange(currency, company_currency, date, rate)
+        return rate
+
+    amounts = _amounts_with_product_quote(amounts, product)
     _seed_api_exchange_rates(amounts, payment, company_currency, date)
     rate = _rate_from_api_amounts(
         currency, company_currency, amounts, date, payment=payment
@@ -407,7 +541,8 @@ def _resolve_conversion_rate(currency, posting_date, settings, amounts=None, pay
             (
                 f"No exchange rate for {currency} → {company_currency} on {date}. "
                 f"The enrollment API did not include enough FX data "
-                f"(amounts.applied_exchange_rate / quoted_base_currency)."
+                f"(fx.to_base_rate / amounts.applied_exchange_rate / "
+                f"quoted_base_currency / course.list_currency)."
             ),
             title="Missing Exchange Rate",
         )
@@ -686,7 +821,7 @@ def _upsert_sales_invoice(
     sinv.currency = currency
     sinv.conversion_rate = conversion_rate
     sinv.company = settings.default_company
-    sinv.debit_to = accounts.receivable
+    sinv.debit_to = _resolve_receivable_account(accounts.company, currency, settings)
     sinv.champions_enrollment_id = source_id
     sinv.set_posting_time = 1
     sinv.ignore_pricing_rule = 1
@@ -719,8 +854,10 @@ def _upsert_payment_entry(
         return existing
 
     gateway = gateway or "manual_transfer"
-    paid_to = accounts.payment_accounts.get(gateway) or accounts.payment_accounts.get("stripe")
-    paid_from = accounts.receivable
+    paid_from = _resolve_receivable_account(settings.default_company, currency, settings)
+    paid_to = _resolve_payment_account(
+        settings.default_company, gateway, currency, settings, accounts.payment_accounts
+    )
     company_currency = _company_currency(settings)
 
     pe = frappe.new_doc("Payment Entry")
@@ -812,7 +949,7 @@ def _upsert_credit_note(
     cn.conversion_rate = conversion_rate
     cn.is_return = 1
     cn.return_against = sinv_name
-    cn.debit_to = accounts.receivable
+    cn.debit_to = _resolve_receivable_account(accounts.company, currency, settings)
     cn.champions_enrollment_id = cn_key
     cn.set_posting_time = 1
 
